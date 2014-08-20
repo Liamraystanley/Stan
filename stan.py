@@ -3,8 +3,8 @@
     Stan - Minecraft Classic Server Bot
     Stan Copyright Liam Stanley (2014)
     License: https://github.com/Liamraystanley/Stan/blob/master/LICENSE
-    NOTICE: ALL COPYRIGHT NOTICES MUST BE KEPT
-    FAILURE TO DO SO IS BREAKING LICENSE TERMS
+    Notice: All copyright notices must be left in tact
+    Failure to do so is breaking license terms
 """
 
 import socket
@@ -15,22 +15,28 @@ import thread
 import threading
 import os
 import sys
+import json
+import urllib
+import urllib2
 import re
+import requests
 
-username = "Swagger"
-heartbeat_file = '/root/classic/heartbeatdata.txt'
-ip = "2.liamstanley.io"
-port = 25566
-
+try:
+    with open('config.json', 'r') as f:
+        config = json.loads(f.read())
+except:
+    print('Error reading config.json! Copy example.json to config.json and edit it!')
+    os._exit(1)
 
 class Bot(object):
 
-    def __init__(self, username, fn, ip, port):
-        self.username = username
-        self.fn = fn
-        self.ip = ip
-        self.port = port
+    def __init__(self, config):
+        self.username = config['username']
+        self.password = config['password']
+        self.ip = socket.gethostbyname(config['ip'])
+        self.port = int(config['port'])
         self.prefix = '!'
+        # Eventually put all this in another file too
         self.triggers = [
             {
                 'on': 'players', 'args': [], 'command': True,
@@ -90,16 +96,72 @@ class Bot(object):
 
     def connect(self):
         """ Make the inital connection the server, thread the socket receive/send to generate buffers """
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.s.connect((str(self.ip), int(self.port)))
+        # Authentication schema
+        # http://www.classicube.net/api/
+
+        # Grab the token...
+        try:
+            data = requests.get('http://www.classicube.net/api/login/')
+            token = data.json()['token']
+            session = data.cookies['session']
+        except:
+            print('\n\nFailed to tokenize request to www.classicube.net!')
+            os._exit(1)
+
+        auth_data = {
+            'username': self.username,
+            'password': self.password,
+            'token': token
+        }
+
+        # Actually do the authenticating, remember to carry over BOTH token AND session cookies
+        try:
+            data = requests.post('http://www.classicube.net/api/login/', data=auth_data, cookies={'session': session})
+            session = data.cookies['session']
+            print data.json()
+            if not data.json()['authenticated'] and data.json()['errorcount'] != 0:
+                errors = data.json()['errors']
+                print('\n\nAn error has occured!\n')
+                if 'token' in errors:
+                    print('It seems we failed to respond with the right token!')
+                if 'username' in errors:
+                    print('It seems that the username you supplied was incorrect!')
+                if 'password' in errors:
+                    print('It seems that the password you supplied was incorrect!')
+                os._exit(1)
+        except:
+            print('\n\nFailed to authenticate to www.classicube.net! (Unknown reason)')
+            os._exit(1)
+
+        # Get the serverlist, find the specific server we're trying to connect to.
+        # Use the IP/PORT in the config
+        try:
+            data = requests.get('http://www.classicube.net/api/serverlist/', cookies={'session': session})
+        except:
+            print('\n\nFailed to fetch the serverlist from www.classicube.net!')
+            os._exit(1)
+
+        # Sort through the list now
+        servers = data.json()
+        self.server = False
+        for server in servers:
+            if server['ip'] == self.ip and int(server['port']) == self.port:
+                self.server = server
+                break
+        if not self.server:
+            print('\n\nWe were unable to connect to your server. Is it public, and on the serverlist?')
+            os._exit(1)
+        self.mppass = server['mppass']
+        self.servername = server['name']
 
         # now for the packet
         # note that the String type is specified as having a length of 64, we'll pad that
         # Null packets are 0
-        with open(self.fn, 'r') as f:
-            self.hash = f.read().split('\n')[0]
-        self.hash = str(hashlib.md5(self.hash + username).hexdigest())
-        self.s.sendall('%c%c%-64s%-64s%c' % (0, 7, self.username, self.hash, 0))
+
+        #self.hash = str(hashlib.md5(self.mppass.encode('ascii', 'ignore') + self.username).hexdigest())
+        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.s.connect((str(self.ip), int(self.port)))
+        self.s.sendall('%c%c%-64s%-64s%c' % (0, 7, self.username, self.mppass, 0))
         try:
             thread.start_new_thread(self.sendData, ())
             thread.start_new_thread(self.line, ())
@@ -113,7 +175,7 @@ class Bot(object):
         return string + (packWith * (length - len(string)))
 
     def decode(self, format, data):
-        """ Decode packets received from the server Make sure each byte is parsed in the correct format """
+        """ Decode packets received from the server. Make sure each byte is parsed in the correct format """
         for char in format:
             if char == "b":
                 yield struct.unpack("!B", data[0])[0]
@@ -126,12 +188,6 @@ class Bot(object):
             elif char == "i":
                 yield struct.unpack("!i", data[:4])[0]
             data = data[self.FORMAT_LENGTHS[char]:]
-
-    def get_hash(self, fn):
-        """ Read the salt from the externaldata.txt (or likewise for your server) """
-        with open(fn, 'r') as f:
-            data = f.read().split('\n')[0]
-        return str(hashlib.md5(data + username).hexdigest())
 
     def removeColors(self, msg):
         """ Strip color-codes from msg """
@@ -186,6 +242,7 @@ class Bot(object):
                             self.sendMessage(user_trigger['response'], args, trigger_args)
 
                         # Triggering here...
+                        # Soon, put this in another file...
                         if trigger == 'chat':
                             output(args['name'], args['message'])
                         if trigger == 'join':
@@ -255,5 +312,5 @@ def output(*args):
     print('[{}] {}'.format(*args))
 
 if __name__ == "__main__":
-    b = Bot(username, heartbeat_file, ip, port)
+    b = Bot(config)
     b.connect()

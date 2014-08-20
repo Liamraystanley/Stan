@@ -1,4 +1,4 @@
 Stan
 ====
 
-Minecraft Classic chat/statistics bot used for 800craft/LegendCraft style software
+Classicube bot for fCraft/800craft/LegendCraft based software
